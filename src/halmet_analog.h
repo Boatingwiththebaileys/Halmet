@@ -16,6 +16,16 @@ sensesp::FloatProducer* ConnectTankSender(Adafruit_ADS1115* ads1115,
                                           const String& sk_id, int sort_order,
                                           bool enable_signalk_output = true);
 
+sensesp::FloatProducer* ConnectEngineSender(Adafruit_ADS1115* ads1115,
+                                          int channel, const String& name,
+                                          const String& sk_id, int sort_order,
+                                          bool enable_signalk_output = true);
+
+sensesp::FloatProducer* ConnectEngineOilSender(Adafruit_ADS1115* ads1115,
+                                          int channel, const String& name,
+                                          const String& sk_id, int sort_order,
+                                          bool enable_signalk_output = true);
+
 class ADS1115VoltageInput : public sensesp::FloatSensor {
  public:
   ADS1115VoltageInput(Adafruit_ADS1115* ads1115, int channel,
