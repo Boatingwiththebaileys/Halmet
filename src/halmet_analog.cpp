@@ -259,6 +259,7 @@ sensesp::FloatProducer* ConnectEngineSender(Adafruit_ADS1115* ads1115,
 
   if (engine_level->get_samples().empty()) {
     // If there's no prior configuration, provide a default curve
+    // Ohm to Kelvin for engine temp  sensor - Also available in the UI
     engine_level->clear_samples();
     engine_level->add_sample(sensesp::CurveInterpolator::Sample(23, 393.15));
     engine_level->add_sample(sensesp::CurveInterpolator::Sample(26, 383.15));
