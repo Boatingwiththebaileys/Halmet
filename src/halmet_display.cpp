@@ -1,52 +1,94 @@
+#include "halmet_digital.h"
 
-#include "halmet_display.h"
+#include "sensesp/sensors/digital_input.h"
+#include "sensesp/sensors/sensor.h"
+#include "sensesp/signalk/signalk_output.h"
+#include "sensesp/transforms/frequency.h"
+#include "sensesp/ui/config_item.h"
+#define ENABLE_SIGNALK
 
-#include <WiFi.h>
+using namespace sensesp;
 
-namespace halmet {
+// Default RPM count scale factor, corresponds to 100 pulses per revolution.
+// This is rarely, if ever correct.
+const float kDefaultFrequencyScale = 1 / 100.;
 
-// OLED display width and height, in pixels
-const int kScreenWidth = 128;
-const int kScreenHeight = 64;
+FloatProducer* ConnectTachoSender(int pin, String name) {
+  char config_path[80];
+  char sk_path[80];
+  char config_title[80];
+  char config_description[80];
 
-bool InitializeSSD1306(const std::shared_ptr<sensesp::SensESPBaseApp> sensesp_app,
-                       Adafruit_SSD1306** display, TwoWire* i2c) {
-  *display = new Adafruit_SSD1306(kScreenWidth, kScreenHeight, i2c, -1);
-  bool init_successful = (*display)->begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  if (!init_successful) {
-    debugD("SSD1306 allocation failed");
-    return false;
-  }
-  delay(100);
-  (*display)->setRotation(2);
-  (*display)->clearDisplay();
-  (*display)->setTextSize(1);
-  (*display)->setTextColor(SSD1306_WHITE);
-  (*display)->setCursor(0, 0);
-  (*display)->printf("Host: %s\n", sensesp_app->get_hostname().c_str());
-  (*display)->display();
+  snprintf(config_path, sizeof(config_path), "/Tacho %s/Pin", name.c_str());
+  snprintf(config_title, sizeof(config_title), "Tacho %s Pin", name.c_str());
+  snprintf(config_description, sizeof(config_description), "Tacho %s Input Pin",
+           name.c_str());
+  auto tacho_input =
+      new DigitalInputCounter(pin, INPUT, RISING, 500, config_path);
 
-  return true;
+  ConfigItem(tacho_input)
+      ->set_title(config_title)
+      ->set_description(config_description);
+
+  snprintf(config_path, sizeof(config_path), "/Tacho %s/Revolution Multiplier",
+           name.c_str());
+  snprintf(config_title, sizeof(config_title), "Tacho %s Multiplier",
+           name.c_str());
+  snprintf(config_description, sizeof(config_description),
+           "Tacho %s Multiplier", name.c_str());
+  auto tacho_frequency = new Frequency(kDefaultFrequencyScale, config_path);
+
+  ConfigItem(tacho_frequency)
+      ->set_title(config_title)
+      ->set_description(config_description);
+
+  tacho_input->connect_to(tacho_frequency);
+
+#ifdef ENABLE_SIGNALK
+  snprintf(config_path, sizeof(config_path), "/Tacho %s/Revolutions SK Path",
+           name.c_str());
+  snprintf(sk_path, sizeof(sk_path), "propulsion.%s.revolutions", name.c_str());
+  snprintf(config_title, sizeof(config_title), "Tacho %s Signal K Path",
+           name.c_str());
+  snprintf(config_description, sizeof(config_description),
+           "Tacho %s Signal K Path", name.c_str());
+
+  auto tacho_frequency_sk_output = new SKOutputFloat(sk_path, config_path);
+
+  ConfigItem(tacho_frequency_sk_output)
+      ->set_title(config_title)
+      ->set_description(config_description);
+
+  tacho_frequency->connect_to(tacho_frequency_sk_output);
+#endif
+
+  return tacho_frequency;
 }
 
-/// Clear a text row on an Adafruit graphics display
-void ClearRow(Adafruit_SSD1306* display, int row) {
-  display->fillRect(0, 8 * row, kScreenWidth, 8, 0);
-}
+BoolProducer* ConnectAlarmSender(int pin, String name) {
+  char config_path[80];
+  char sk_path[80];
+  char config_title[80];
+  char config_description[80];
 
-void PrintValue(Adafruit_SSD1306* display, int row, String title, float value) {
-  ClearRow(display, row);
-  display->setCursor(0, 8 * row);
-  display->printf("%s: %.1f", title.c_str(), value);
-  display->display();
-}
+  auto* alarm_input = new DigitalInputState(pin, INPUT, 100);
 
-void PrintValue(Adafruit_SSD1306* display, int row, String title,
-                String value) {
-  ClearRow(display, row);
-  display->setCursor(0, 8 * row);
-  display->printf("%s: %s", title.c_str(), value.c_str());
-  display->display();
-}
+#ifdef ENABLE_SIGNALK
+  snprintf(config_path, sizeof(config_path), "/Alarm %s/SK Path", name.c_str());
+  snprintf(sk_path, sizeof(sk_path), "alarm.%s", name.c_str());
+  snprintf(config_title, sizeof(config_title), "Alarm %s Signal K Path",
+           name.c_str());
+  snprintf(config_description, sizeof(config_description),
+           "Alarm %s Signal K Path", name.c_str());
 
-}  // namespace halmet
+  auto alarm_sk_output = new SKOutputBool(sk_path, config_path);
+
+  ConfigItem(alarm_sk_output)
+      ->set_title(config_title)
+      ->set_description(config_description);
+
+  alarm_input->connect_to(alarm_sk_output);
+#endif
+
+  return alarm_input;
+}
