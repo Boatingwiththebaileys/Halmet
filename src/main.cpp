@@ -1,17 +1,15 @@
-// Signal K application template file.
+/ Signal K application template file.
 //
-// This application demonstrates core SensESP concepts in a very
-// concise manner. You can build and upload the application as is
-// and observe the value changes on the serial port monitor.
-//
-// You can use this source file as a basis for your own projects.
-// Remove the parts that are not relevant to you, and add your own code
-// for external hardware libraries.
+// Based on Halmet HAT Labs code - This will now read a BMP280, 2 digital 1-wire sensors, Tacho on D1, Bilge monitor on D2, Fuel/Tank monitor on A1, Voltage on A2, Engine temp with Ohm to K on A3 and Oil Pressure Ohm to Pa on A4.
+// Code in test as of Sept 2025
+// Boating With The Baileys
 
 #include <Adafruit_ADS1X15.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <NMEA2000_esp32.h>
+#include <Adafruit_BMP280.h>
+#include <Wire.h>
 
 #include "n2k_senders.h"
 #include "sensesp/net/discovery.h"
@@ -23,9 +21,17 @@
 #include "sensesp/system/system_status_led.h"
 #include "sensesp/transforms/lambda_transform.h"
 #include "sensesp/transforms/linear.h"
+#include "sensesp/transforms/moving_average.h"
+#include "sensesp/transforms/analogvoltage.h"
+#include "sensesp/transforms/curveinterpolator.h"
+#include "sensesp/transforms/voltagedivider.h"
 #include "sensesp/ui/config_item.h"
 #include "sensesp_app_builder.h"
 #define BUILDER_CLASS SensESPAppBuilder
+
+#include "sensesp_onewire/onewire_temperature.h"
+#define ENABLE_SIGNALK
+
 
 #include "halmet_analog.h"
 #include "halmet_const.h"
@@ -37,9 +43,41 @@
 
 using namespace sensesp;
 using namespace halmet;
+using namespace sensesp::onewire;
+
+
+class FuelInterpreter : public CurveInterpolator {
+ public:
+  FuelInterpreter(String config_path = "")
+      : CurveInterpolator(NULL, config_path) {
+    // Populate a lookup table to translate RPM to m3/s
+    clear_samples();
+    // addSample(CurveInterpolator::Sample(RPM, m3/s));
+    add_sample(CurveInterpolator::Sample(500, 0.00000011));
+    add_sample(CurveInterpolator::Sample(1000, 0.00000019));
+    add_sample(CurveInterpolator::Sample(1500, 0.0000003));
+    add_sample(CurveInterpolator::Sample(1800, 0.00000041));
+    add_sample(CurveInterpolator::Sample(2000, 0.00000052));
+    add_sample(CurveInterpolator::Sample(2200, 0.00000066));
+    add_sample(CurveInterpolator::Sample(2400, 0.00000079));
+    add_sample(CurveInterpolator::Sample(2600, 0.00000097));
+    add_sample(CurveInterpolator::Sample(2800, 0.00000124));
+    add_sample(CurveInterpolator::Sample(3000, 0.00000153));
+    add_sample(CurveInterpolator::Sample(3200, 0.00000183));
+    add_sample(CurveInterpolator::Sample(3400, 0.000002));
+    add_sample(CurveInterpolator::Sample(3800, 0.00000205));  
+  }
+};
+
 
 /////////////////////////////////////////////////////////////////////
 // Declare some global variables required for the firmware operation.
+
+
+Adafruit_BMP280 bmp280;
+
+float read_temp_callback() { return (bmp280.readTemperature() + 273.15);}
+float read_pressure_callback() { return (bmp280.readPressure());}
 
 tNMEA2000* nmea2000;
 elapsedMillis n2k_time_since_rx = 0;
@@ -77,6 +115,7 @@ const int kTestOutputPin = GPIO_NUM_33;
 const int kTestOutputFrequency = 380;
 #endif
 
+
 /////////////////////////////////////////////////////////////////////
 // The setup function performs one-time application initialization.
 void setup() {
@@ -98,9 +137,12 @@ void setup() {
                     // EDIT: Optionally, hard-code the WiFi and Signal K server
                     // settings. This is normally not needed.
                     //->set_wifi("My WiFi SSID", "my_wifi_password")
-                    //->set_sk_server("192.168.10.3", 80)
+                    ->set_sk_server("192.168.0.213:3000", 3000)
                     // EDIT: Enable OTA updates with a password.
                     //->enable_ota("my_ota_password")
+                    ->enable_uptime_sensor()
+                    ->enable_ip_address_sensor()
+                    ->enable_wifi_signal_sensor()
                     ->get_app();
 
   // initialize the I2C bus
@@ -121,7 +163,7 @@ void setup() {
   // Set the duty cycle to 50%
   // Duty cycle value is calculated based on the resolution
   // For 13-bit resolution, max value is 8191, so 50% is 4096
-  ledcWrite(0, 4096);
+  ledcWrite(kTestOutputPin, 4096);
 #endif
 
   /////////////////////////////////////////////////////////////////////
@@ -170,6 +212,68 @@ void setup() {
   // Initialize the OLED display
   bool display_present = InitializeSSD1306(sensesp_app->get(), &display, i2c);
 
+  ///  1-Wire Temp Sensors ///
+  /// Exhaust Temp Sensors ///
+
+  DallasTemperatureSensors* dts = new DallasTemperatureSensors(4);
+
+  auto* exhaust_temp =
+      new OneWireTemperature(dts, 1000, "/Exhaust Temperature/oneWire");
+
+    ConfigItem(exhaust_temp)
+      ->set_title("Exhaust Temperature Sender")
+      ->set_description("Device ID of the engine exhaust sender")
+      ->set_sort_order(100);
+
+    auto exhaust_temp_calibration =
+      new Linear(1.0, 0.0, "/Exhaust_Temperature/linear");
+
+    ConfigItem(exhaust_temp_calibration)
+      ->set_title("Exhaust Temperature Calibration")
+      ->set_description("Calibration for the exhaust temperature sensor")
+      ->set_sort_order(200);
+
+    auto exhaust_temp_sk_output = new SKOutputFloat(
+      "propulsion.engine.1.exhaustTemperature", "/Exhaust_Temperature/skPath");
+     
+     ConfigItem(exhaust_temp_sk_output)
+      ->set_title("Exhaust Temperature Signal K Path")
+      ->set_description("Signal K path for the exhaust temperature")
+      ->set_sort_order(300);
+
+    exhaust_temp->connect_to(exhaust_temp_calibration)
+      ->connect_to(exhaust_temp_sk_output);
+
+/// Oil Temp Sensors ///
+
+  auto oil_temp =
+      new OneWireTemperature(dts, 1000, "/Oil Temperature/oneWire");
+
+    ConfigItem(oil_temp)
+      ->set_title("Oil Temperature Sender")
+      ->set_description("Device ID of the engine oil sender")
+      ->set_sort_order(100);
+
+    auto oil_temp_calibration =
+      new Linear(1.0, 0.0, "/oil_Temperature/linear");
+
+    ConfigItem(oil_temp_calibration)
+      ->set_title("Oil Temperature Calibration")
+      ->set_description("Calibration for the oil temperature sensor")
+      ->set_sort_order(200);
+
+    auto oil_temp_sk_output = new SKOutputFloat(
+      "propulsion.engine.1.oilTemperature", "/oil_Temperature/skPath");
+     
+     ConfigItem(oil_temp_sk_output)
+      ->set_title("Oil Temperature Signal K Path")
+      ->set_description("Signal K path for the oil temperature")
+      ->set_sort_order(300);
+
+    oil_temp->connect_to(oil_temp_calibration)
+      ->connect_to(oil_temp_sk_output);
+  
+  
   ///////////////////////////////////////////////////////////////////
   // Analog inputs
 
@@ -179,16 +283,18 @@ void setup() {
   // EDIT: To enable more tanks, uncomment the lines below.
   auto tank_a1_volume = ConnectTankSender(ads1115, 0, "Fuel", "fuel.main", 3000,
                                           enable_signalk_output);
-  // auto tank_a2_volume = ConnectTankSender(ads1115, 1, "A2");
-  // auto tank_a3_volume = ConnectTankSender(ads1115, 2, "A3");
-  // auto tank_a4_volume = ConnectTankSender(ads1115, 3, "A4");
+  // auto tank_a3_volume = ConnectTankSender(ads1115, 1, "A2");
+  auto engine_OilPressure = ConnectEngineOilSender(ads1115, 2, "Engine Oil Pressure", "oilPressure", 1000,
+                                          enable_signalk_output);
+  auto engine_temperature = ConnectEngineSender(ads1115, 3, "Engine Temperature", "temperature", 1000,
+                                          enable_signalk_output);
 
 #ifdef ENABLE_NMEA2000_OUTPUT
-  // Tank 1, instance 0. Capacity 200 liters. You can change the capacity
+  // Tank 1, instance 0. Capacity 150 liters. You can change the capacity
   // in the web UI as well.
   // EDIT: Make sure this matches your tank configuration above.
   N2kFluidLevelSender* tank_a1_sender = new N2kFluidLevelSender(
-      "/Tanks/Fuel/NMEA 2000", 0, N2kft_Fuel, 200, nmea2000);
+      "/Tanks/Fuel/NMEA 2000", 0, N2kft_Fuel, 150, nmea2000);
 
   ConfigItem(tank_a1_sender)
       ->set_title("Tank A1 NMEA 2000")
@@ -235,7 +341,7 @@ void setup() {
 
   // EDIT: More alarm inputs can be defined by duplicating the lines below.
   // Make sure to not define a pin for both a tacho and an alarm.
-  auto alarm_d2_input = ConnectAlarmSender(kDigitalInputPin2, "D2");
+  auto alarm_d2_input = ConnectAlarmSender(kDigitalInputPin2, "engineBilge");
   auto alarm_d3_input = ConnectAlarmSender(kDigitalInputPin3, "D3");
   // auto alarm_d4_input = ConnectAlarmSender(kDigitalInputPin4, "D4");
 
@@ -271,11 +377,11 @@ void setup() {
   // FIXME: Transmit the alarms over SK as well.
 
   ///////////////////////////////////////////////////////////////////
-  // Digital tacho inputs
+    // Digital tacho inputs
 
   // Connect the tacho senders. Engine name is "main".
   // EDIT: More tacho inputs can be defined by duplicating the line below.
-  auto tacho_d1_frequency = ConnectTachoSender(kDigitalInputPin1, "main");
+  auto tacho_d1_frequency = ConnectTachoSender(kDigitalInputPin1, "1");
 
   // Connect outputs to the N2k senders.
   // EDIT: Make sure this matches your tacho configuration above.
@@ -296,6 +402,27 @@ void setup() {
     tacho_d1_frequency->connect_to(new LambdaConsumer<float>(
         [](float value) { PrintValue(display, 3, "RPM D1", 60 * value); }));
   }
+
+  /// BMP280 SENSOR CODE - Engine Room Temp Sensor ////  
+
+  // 0x77 is the default address. Some chips use 0x76, which is shown here.
+  // If you need to use the TwoWire library instead of the Wire library, there
+  // is a different constructor: see bmp280.h
+
+  bmp280.begin(0x76);
+
+  // Create a RepeatSensor with float output that reads the temperature
+  // using the function defined above.
+  auto* engine_room_temp =
+      new RepeatSensor<float>(5000, read_temp_callback);
+
+  auto* engine_room_pressure = 
+      new RepeatSensor<float>(60000, read_pressure_callback);
+
+  // Send the temperature to the Signal K server as a Float
+  engine_room_temp->connect_to(new SKOutputFloat("propulsion.engineRoom.temperature"));
+
+  engine_room_pressure->connect_to(new SKOutputFloat("propulsion.engineRoom.pressure"));
 
   ///////////////////////////////////////////////////////////////////
   // Display setup
