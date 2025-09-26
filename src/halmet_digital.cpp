@@ -5,6 +5,7 @@
 #include "sensesp/signalk/signalk_output.h"
 #include "sensesp/transforms/frequency.h"
 #include "sensesp/ui/config_item.h"
+#define ENABLE_SIGNALK
 
 using namespace sensesp;
 
