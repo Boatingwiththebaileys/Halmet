@@ -1,4 +1,4 @@
-/ Signal K application template file.
+// Signal K application template file.
 //
 // Based on Halmet HAT Labs code - This will now read a BMP280, 2 digital 1-wire sensors, Tacho on D1, Bilge monitor on D2, Fuel/Tank monitor on A1, Voltage on A2, Engine temp with Ohm to K on A3 and Oil Pressure Ohm to Pa on A4.
 // Code in test as of Sept 2025
